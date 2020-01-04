@@ -88,6 +88,11 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  
+  p->stime = ticks;
+  p->etime = 0;
+  p->iotime = 0;
+  p->rtime = 0;
 
   release(&ptable.lock);
 
@@ -263,6 +268,7 @@ exit(void)
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
+  curproc->etime = ticks;
   sched();
   panic("zombie exit");
 }
@@ -342,6 +348,8 @@ scheduler(void)
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
+
+      // cprintf("Process %s with pid %d running with createTime %d\n", p->name, p->pid, p->stime);
 
       swtch(&(c->scheduler), p->context);
       switchkvm();
@@ -531,4 +539,70 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+//current process status
+int
+cps()
+{
+  struct proc *p;
+  
+  // Enable interrupts on this processor.
+  sti();
+
+    // Loop over process table looking for process with pid.
+  acquire(&ptable.lock);
+  cprintf("name \t pid \t state \n");
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if ( p->state == SLEEPING )
+        cprintf("%s \t %d  \t SLEEPING \n ", p->name, p->pid );
+      else if ( p->state == RUNNING )
+        cprintf("%s \t %d  \t RUNNING \n ", p->name, p->pid );
+  }
+  
+  release(&ptable.lock);
+  
+  return 22;
+}
+
+int
+waitx(int* wtime , int* rtime)
+{
+  struct proc *p;
+  int havekids, pid;
+  struct proc *curproc = myproc();
+  
+  acquire(&ptable.lock);
+  for(;;){
+    havekids = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->parent != curproc)
+        continue;
+      havekids = 1;
+      if(p->state == ZOMBIE){
+        // Found one.
+        pid = p->pid;
+        kfree(p->kstack);
+        p->kstack = 0;
+        freevm(p->pgdir);
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+
+        *wtime= p->etime - p->stime - p->rtime - p->iotime;
+        *rtime=p->rtime;
+        cprintf("\n*****\n    Start Time: %d\n    End Time: %d\n    I/O Time: %d\n    Run Time: %d\n*****\n\n", p->stime, p->etime, p->iotime, p-> rtime);
+        release(&ptable.lock);
+        return pid;
+      }
+    }
+    if(!havekids || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+    sleep(curproc, &ptable.lock);
+  }
+
 }
