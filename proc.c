@@ -93,6 +93,7 @@ found:
   p->etime = 0;
   p->iotime = 0;
   p->rtime = 0;
+  p->priority = 60;    //default priority
 
   release(&ptable.lock);
 
@@ -329,6 +330,7 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *p1;
   struct cpu *c = mycpu();
   c->proc = 0;
   
@@ -336,11 +338,23 @@ scheduler(void)
     // Enable interrupts on this processor.
     sti();
 
+    struct proc *highP = 0;
+
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+
+      highP = p;
+      for (p1 = ptable.proc; p1 < &ptable.proc[NPROC]; p1++){
+        if (p1->state != RUNNABLE)
+          continue;
+        if (highP->priority > p1->priority)
+          highP = p1;
+      }
+      p = highP;
+
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -552,17 +566,19 @@ cps()
 
     // Loop over process table looking for process with pid.
   acquire(&ptable.lock);
-  cprintf("name \t pid \t state \n");
+  cprintf("name \t pid \t state \t\t priority \n");
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if ( p->state == SLEEPING )
-        cprintf("%s \t %d  \t SLEEPING \n ", p->name, p->pid );
+        cprintf("%s \t %d  \t SLEEPING \t\t %d \n ", p->name, p->pid, p->priority);
       else if ( p->state == RUNNING )
-        cprintf("%s \t %d  \t RUNNING \n ", p->name, p->pid );
+        cprintf("%s \t %d  \t RUNNING  \t\t %d \n ", p->name, p->pid, p->priority);
+      else if ( p->state == RUNNABLE )
+        cprintf("%s \t %d  \t RUNNABLE  \t\t %d \n ", p->name, p->pid, p->priority);
   }
   
   release(&ptable.lock);
   
-  return 22;
+  return 1;
 }
 
 int
@@ -606,3 +622,13 @@ waitx(int* wtime , int* rtime)
   }
 
 }
+
+int
+set_priority(int priority )
+{
+  int oldPriority = myproc()->priority;
+  myproc()->priority = priority;
+  yield();
+  return oldPriority;
+}
+
