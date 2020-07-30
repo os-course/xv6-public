@@ -88,6 +88,12 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  
+  p->stime = ticks;
+  p->etime = 0;
+  p->iotime = 0;
+  p->rtime = 0;
+  p->priority = 60;    //default priority
 
   release(&ptable.lock);
 
@@ -263,6 +269,7 @@ exit(void)
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
+  curproc->etime = ticks;
   sched();
   panic("zombie exit");
 }
@@ -323,6 +330,7 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *p1;
   struct cpu *c = mycpu();
   c->proc = 0;
   
@@ -330,11 +338,23 @@ scheduler(void)
     // Enable interrupts on this processor.
     sti();
 
+    struct proc *highP = 0;
+
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+
+      highP = p;
+      for (p1 = ptable.proc; p1 < &ptable.proc[NPROC]; p1++){
+        if (p1->state != RUNNABLE)
+          continue;
+        if (highP->priority > p1->priority)
+          highP = p1;
+      }
+      p = highP;
+
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -342,6 +362,8 @@ scheduler(void)
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
+
+      // cprintf("Process %s with pid %d running with createTime %d\n", p->name, p->pid, p->stime);
 
       swtch(&(c->scheduler), p->context);
       switchkvm();
@@ -532,3 +554,81 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+//current process status
+int
+cps()
+{
+  struct proc *p;
+  
+  // Enable interrupts on this processor.
+  sti();
+
+    // Loop over process table looking for process with pid.
+  acquire(&ptable.lock);
+  cprintf("name \t pid \t state \t\t priority \n");
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if ( p->state == SLEEPING )
+        cprintf("%s \t %d  \t SLEEPING \t\t %d \n ", p->name, p->pid, p->priority);
+      else if ( p->state == RUNNING )
+        cprintf("%s \t %d  \t RUNNING  \t\t %d \n ", p->name, p->pid, p->priority);
+      else if ( p->state == RUNNABLE )
+        cprintf("%s \t %d  \t RUNNABLE  \t\t %d \n ", p->name, p->pid, p->priority);
+  }
+  
+  release(&ptable.lock);
+  
+  return 1;
+}
+
+int
+waitx(int* wtime , int* rtime)
+{
+  struct proc *p;
+  int havekids, pid;
+  struct proc *curproc = myproc();
+  
+  acquire(&ptable.lock);
+  for(;;){
+    havekids = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->parent != curproc)
+        continue;
+      havekids = 1;
+      if(p->state == ZOMBIE){
+        // Found one.
+        pid = p->pid;
+        kfree(p->kstack);
+        p->kstack = 0;
+        freevm(p->pgdir);
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+
+        *wtime= p->etime - p->stime - p->rtime - p->iotime;
+        *rtime=p->rtime;
+        cprintf("\n*****\n    Start Time: %d\n    End Time: %d\n    I/O Time: %d\n    Run Time: %d\n*****\n\n", p->stime, p->etime, p->iotime, p-> rtime);
+        release(&ptable.lock);
+        return pid;
+      }
+    }
+    if(!havekids || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+    sleep(curproc, &ptable.lock);
+  }
+
+}
+
+int
+set_priority(int priority )
+{
+  int oldPriority = myproc()->priority;
+  myproc()->priority = priority;
+  yield();
+  return oldPriority;
+}
+
